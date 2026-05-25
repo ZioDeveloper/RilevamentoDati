@@ -1,0 +1,19 @@
+Promemoria GitHub
+=================
+
+Dopo aver fatto modifiche al progetto:
+
+1. Controllare cosa e' cambiato
+   git status
+
+2. Preparare tutti i file modificati
+   git add .
+
+3. Creare un salvataggio locale
+   git commit -m "Descrizione modifica"
+
+4. Mandare tutto su GitHub
+   git push
+
+Repository GitHub:
+https://github.com/ZioDeveloper/RilevamentoDati
