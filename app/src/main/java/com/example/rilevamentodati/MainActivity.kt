@@ -1,8 +1,14 @@
 package com.example.rilevamentodati
 
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.media.ExifInterface
 import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.ComponentActivity
@@ -80,6 +86,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -102,7 +109,9 @@ import com.example.rilevamentodati.ui.PerizieViewModelFactory
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -139,8 +148,11 @@ class MainActivity : ComponentActivity() {
                         onCreaDekraPerizia = viewModel::creaDekraPerizia,
                         onAggiungiFotoGuidata = viewModel::aggiungiFotoGuidata,
                         onRimuoviFotoGuidata = viewModel::rimuoviFotoGuidata,
+                        onSegnaCommessaDaReinviare = viewModel::segnaCommessaDaReinviare,
                         onSalvaClick = viewModel::salva,
-                        onInviaDatiClick = viewModel::inviaDati,
+                        onInviaDatiClick = { viewModel.inviaPacchettoApi(app, API_IMPORT_URL) },
+                        onPacchettoEmailAperto = viewModel::pacchettoEmailAperto,
+                        onPulisciFotoInviateClick = viewModel::pulisciFotoInviate,
                         onModificaClick = viewModel::modifica,
                         onAnnullaModificaClick = viewModel::annullaModifica,
                         onEliminaClick = viewModel::elimina
@@ -271,6 +283,8 @@ private fun LoginScreen(
     var codice by rememberSaveable { mutableStateOf("C001") }
     var password by rememberSaveable { mutableStateOf("Alesi") }
     var errore by rememberSaveable { mutableStateOf<String?>(null) }
+    val isOnline = rememberOnlineStatus()
+    val appVersion = rememberAppVersionName()
     val submitLogin = {
         val utente = autenticaUtente(codice, password)
         if (utente == null) {
@@ -304,7 +318,18 @@ private fun LoginScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.nonsolograndine_logo_orizzontale),
+                        contentDescription = "Non Solo Grandine",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(82.dp),
+                        contentScale = ContentScale.Fit
+                    )
+
                     SectionTitle("Accesso operatore")
+
+                    OnlineStatusCard(isOnline = isOnline)
 
                     OutlinedTextField(
                         value = codice,
@@ -389,6 +414,13 @@ private fun LoginScreen(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Versione $appVersion",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary
+            )
         }
     }
 }
@@ -402,6 +434,11 @@ private enum class AppSection(
 
 private const val DETAIL_NEW = "new"
 private const val DETAIL_EDIT = "edit"
+private const val API_IMPORT_URL = "http://127.0.0.1:5205/api/import/rilevamento-dati?dryRun=false"
+private const val DESTINATARIO_TRASFERIMENTO = ""
+private const val FOTO_TARGET_MAX_BYTES = 300 * 1024
+private const val FOTO_MAX_DIMENSION = 1600
+private const val FOTO_MIN_DIMENSION = 900
 
 private data class FotoGuidataPending(
     val periziaId: Long,
@@ -424,8 +461,11 @@ private fun RilevamentoDatiAppScreen(
     onCreaDekraPerizia: (Int, String) -> Unit,
     onAggiungiFotoGuidata: (Long, DekraTipoDocumentoSeed, String) -> Unit,
     onRimuoviFotoGuidata: (FotoPerizia) -> Unit,
+    onSegnaCommessaDaReinviare: (Int) -> Unit,
     onSalvaClick: () -> Unit,
     onInviaDatiClick: () -> Unit,
+    onPacchettoEmailAperto: () -> Unit,
+    onPulisciFotoInviateClick: () -> Unit,
     onModificaClick: (PeriziaConFoto) -> Unit,
     onAnnullaModificaClick: () -> Unit,
     onEliminaClick: (Perizia) -> Unit
@@ -468,14 +508,17 @@ private fun RilevamentoDatiAppScreen(
     var fotoGuidataInScatto by remember { mutableStateOf<FotoGuidataPending?>(null) }
     var fotoGuidataDaGalleria by remember { mutableStateOf<FotoGuidataPending?>(null) }
     val context = LocalContext.current
+    val isOnline = rememberOnlineStatus()
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         val path = fotoInScattoPath
         val fotoGuidata = fotoGuidataInScatto
         if (success && path != null && fotoGuidata != null) {
+            ottimizzaFotoPerInvio(File(path))
             onAggiungiFotoGuidata(fotoGuidata.periziaId, fotoGuidata.tipoDocumento, path)
         } else if (success && path != null) {
+            ottimizzaFotoPerInvio(File(path))
             onAggiungiFoto(path)
         } else if (path != null) {
             File(path).delete()
@@ -642,6 +685,7 @@ private fun RilevamentoDatiAppScreen(
                         commessa == null -> {
                             DekraCommesseScreen(
                                 utente = utente,
+                                isOnline = isOnline,
                                 onCommessaClick = { selectedDekraCommessaId = it.id },
                                 modifier = Modifier.padding(innerPadding)
                             )
@@ -658,6 +702,7 @@ private fun RilevamentoDatiAppScreen(
                                     nuovaTargaErrore = null
                                 },
                                 onPeriziaClick = { selectedDekraPeriziaId = it.perizia.id },
+                                onSegnaDaReinviareClick = { onSegnaCommessaDaReinviare(commessa.id) },
                                 modifier = Modifier.padding(innerPadding)
                             )
                         }
@@ -690,7 +735,10 @@ private fun RilevamentoDatiAppScreen(
                 currentSection == AppSection.TRASFERIMENTO -> {
                     TrasferimentoDatiScreen(
                         state = state,
+                        isOnline = isOnline,
                         onInviaDatiClick = { mostraConfermaInvio = true },
+                        onPacchettoEmailAperto = onPacchettoEmailAperto,
+                        onPulisciFotoInviateClick = onPulisciFotoInviateClick,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -731,12 +779,14 @@ private fun RilevamentoDatiAppScreen(
 
     if (mostraConfermaInvio) {
         ConfirmDialog(
-            title = "Inviare i dati?",
-            text = "Verranno segnate come inviate ${state.daInviareCount} perizie.",
-            confirmText = "Invia",
+            title = "Creare il pacchetto dati?",
+            text = "Verranno raccolte in un file ZIP ${state.daInviareCount} perizie con le relative foto e si aprira' l'app email per l'invio.",
+            confirmText = "Crea e invia email",
             onConfirm = {
                 mostraConfermaInvio = false
-                onInviaDatiClick()
+                if (isOnline) {
+                    onInviaDatiClick()
+                }
             },
             onDismiss = { mostraConfermaInvio = false }
         )
@@ -822,6 +872,7 @@ private fun AppDrawer(
 @Composable
 private fun DekraCommesseScreen(
     utente: LoginUser,
+    isOnline: Boolean,
     onCommessaClick: (DekraCommessaSeed) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -834,6 +885,10 @@ private fun DekraCommesseScreen(
     ) {
         item {
             SectionTitle("Commesse DEKRA")
+        }
+
+        item {
+            OnlineStatusCard(isOnline = isOnline)
         }
 
         if (commesse.isEmpty()) {
@@ -891,8 +946,12 @@ private fun DekraVeicoliScreen(
     perizie: List<PeriziaConFoto>,
     onNuovaPeriziaClick: () -> Unit,
     onPeriziaClick: (PeriziaConFoto) -> Unit,
+    onSegnaDaReinviareClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val inviate = perizie.count { it.perizia.syncStatus == SyncStatus.INVIATO }
+    val daInviare = perizie.count { it.perizia.syncStatus == SyncStatus.DA_INVIARE }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -902,10 +961,30 @@ private fun DekraVeicoliScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SectionTitle(commessa.descrizione)
                 Text(
-                    text = "${perizie.size} veicoli disponibili offline",
+                    text = "${perizie.size} veicoli disponibili offline - $daInviare da inviare, $inviate inviati",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )
+                OutlinedButton(
+                    onClick = onSegnaDaReinviareClick,
+                    enabled = inviate > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(
+                        if (inviate > 0) {
+                            "Segna da reinviare ($inviate)"
+                        } else {
+                            "Nessuna perizia inviata da reinviare"
+                        }
+                    )
+                }
                 Button(
                     onClick = onNuovaPeriziaClick,
                     modifier = Modifier.fillMaxWidth(),
@@ -1492,17 +1571,35 @@ private fun PeriziaDetailScreen(
 @Composable
 private fun TrasferimentoDatiScreen(
     state: PerizieUiState,
+    isOnline: Boolean,
     onInviaDatiClick: () -> Unit,
+    onPacchettoEmailAperto: () -> Unit,
+    onPulisciFotoInviateClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val inviati = state.perizie.count { it.perizia.syncStatus == SyncStatus.INVIATO }
     val errori = state.perizie.count { it.perizia.syncStatus == SyncStatus.ERRORE }
+    val fotoInviate = state.perizie.filter { it.perizia.syncStatus == SyncStatus.INVIATO }.sumOf { it.foto.size }
+    val perizieInviate = state.perizie.count { it.perizia.syncStatus == SyncStatus.INVIATO }
+    var mostraConfermaPulizia by remember { mutableStateOf(false) }
+    LaunchedEffect(state.trasferimento.pacchettoDaInviarePath, isOnline) {
+        val path = state.trasferimento.pacchettoDaInviarePath
+        if (path != null && isOnline) {
+            inviaPacchettoTrasferimentoEmail(context, path)
+            onPacchettoEmailAperto()
+        }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        item {
+            OnlineStatusCard(isOnline = isOnline)
+        }
+
         item {
             SummarySection(
                 total = state.perizie.size,
@@ -1540,9 +1637,44 @@ private fun TrasferimentoDatiScreen(
                         status = SyncStatus.ERRORE
                     )
 
+                    state.trasferimento.messaggio?.let { messaggio ->
+                        Text(
+                            text = messaggio,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    state.trasferimento.errore?.let { errore ->
+                        Text(
+                            text = errore,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    state.trasferimento.ultimoPacchettoPath?.let { path ->
+                        Text(
+                            text = "Ultimo pacchetto:\n$path",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = { inviaPacchettoTrasferimentoEmail(context, path) },
+                            enabled = isOnline,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.size(8.dp))
+                            Text("Invia email")
+                        }
+                    }
+
                     Button(
                         onClick = onInviaDatiClick,
-                        enabled = state.daInviareCount > 0,
+                        enabled = isOnline && state.daInviareCount > 0 && !state.trasferimento.inCorso,
                         modifier = Modifier.fillMaxWidth(),
                         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
                     ) {
@@ -1553,16 +1685,57 @@ private fun TrasferimentoDatiScreen(
                         )
                         Spacer(modifier = Modifier.size(8.dp))
                         Text(
-                            if (state.daInviareCount > 0) {
-                                "Trasferisci dati (${state.daInviareCount})"
+                            when {
+                                state.trasferimento.inCorso -> "Invio all'API..."
+                                !isOnline -> "Offline: invio non disponibile"
+                                state.daInviareCount > 0 -> "Invia ad API (${state.daInviareCount})"
+                                else -> "Nessun dato da trasferire"
+                            }
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { mostraConfermaPulizia = true },
+                        enabled = perizieInviate > 0 && !state.trasferimento.puliziaInCorso,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Text(
+                            when {
+                                state.trasferimento.puliziaInCorso -> "Cancellazione dati..."
+                                perizieInviate > 0 -> "Cancella perizie inviate ($perizieInviate)"
+                                else -> "Nessuna perizia inviata da cancellare"
+                            },
+                            color = if (perizieInviate > 0) {
+                                MaterialTheme.colorScheme.error
                             } else {
-                                "Nessun dato da trasferire"
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
                     }
                 }
             }
         }
+    }
+
+    if (mostraConfermaPulizia) {
+        ConfirmDialog(
+            title = "Cancellare i dati inviati?",
+            text = "Verranno cancellate dal telefono $perizieInviate perizie gia' inviate e $fotoInviate foto collegate. Uso temporaneo per fase test.",
+            confirmText = "Cancella inviati",
+            onConfirm = {
+                mostraConfermaPulizia = false
+                onPulisciFotoInviateClick()
+            },
+            onDismiss = { mostraConfermaPulizia = false }
+        )
     }
 }
 
@@ -1673,6 +1846,48 @@ private fun NuovaDekraPeriziaDialog(
     )
 }
 
+@Composable
+private fun OnlineStatusCard(isOnline: Boolean) {
+    val background = if (isOnline) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+    }
+    val foreground = if (isOnline) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.error
+    }
+    val titolo = if (isOnline) "Online" else "Offline"
+    val dettaglio = if (isOnline) {
+        "Invio dati disponibile."
+    } else {
+        "Puoi lavorare e fotografare; l'invio email e' disattivato."
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = background
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = titolo,
+                style = MaterialTheme.typography.titleMedium,
+                color = foreground,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = dettaglio,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
 @Composable
 private fun SummarySection(total: Int, daInviare: Int) {
     Row(
@@ -2066,6 +2281,37 @@ private val SyncStatus.label: String
         SyncStatus.ERRORE -> "Errore"
     }
 
+@Composable
+private fun rememberAppVersionName(): String {
+    val context = LocalContext.current
+    return remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+        }.getOrDefault("")
+    }
+}
+@Composable
+private fun rememberOnlineStatus(): Boolean {
+    val context = LocalContext.current
+    var isOnline by remember { mutableStateOf(isDeviceOnline(context)) }
+
+    LaunchedEffect(context) {
+        while (true) {
+            isOnline = isDeviceOnline(context)
+            delay(3_000)
+        }
+    }
+
+    return isOnline
+}
+
+private fun isDeviceOnline(context: Context): Boolean {
+    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val network = connectivityManager.activeNetwork ?: return false
+    val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+}
 private fun createPhotoFile(context: Context): File {
     val directory = File(context.filesDir, "perizia_foto").apply {
         mkdirs()
@@ -2081,6 +2327,28 @@ private fun createPhotoUri(context: Context, file: File): Uri {
     )
 }
 
+private fun inviaPacchettoTrasferimentoEmail(context: Context, path: String) {
+    val file = File(path)
+    if (!file.exists()) return
+
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file
+    )
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/zip"
+        if (DESTINATARIO_TRASFERIMENTO.isNotBlank()) {
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(DESTINATARIO_TRASFERIMENTO))
+        }
+        putExtra(Intent.EXTRA_SUBJECT, "Pacchetto dati DEKRA")
+        putExtra(Intent.EXTRA_TEXT, "In allegato il pacchetto dati DEKRA esportato dall'app RilevamentoDati.")
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "Invia pacchetto dati")) }
+}
+
 private fun copyPhotoToAppStorage(context: Context, uri: Uri): String? {
     val file = createPhotoFile(context)
     return runCatching {
@@ -2089,8 +2357,107 @@ private fun copyPhotoToAppStorage(context: Context, uri: Uri): String? {
                 input.copyTo(output)
             }
         } ?: return null
+        ottimizzaFotoPerInvio(file)
         file.absolutePath
     }.getOrNull()
+}
+
+private fun ottimizzaFotoPerInvio(file: File) {
+    runCatching {
+        if (!file.exists()) return@runCatching
+        var bitmap = decodeBitmapPerInvio(file, FOTO_MAX_DIMENSION) ?: return@runCatching
+        bitmap = ruotaBitmapDaExif(bitmap, file.absolutePath)
+        var maxDimension = FOTO_MAX_DIMENSION
+        var migliore = comprimiJpeg(bitmap, 82)
+
+        while (true) {
+            for (quality in 82 downTo 50 step 4) {
+                val candidate = comprimiJpeg(bitmap, quality)
+                migliore = candidate
+                if (candidate.size <= FOTO_TARGET_MAX_BYTES) {
+                    file.writeBytes(candidate)
+                    bitmap.recycle()
+                    return@runCatching
+                }
+            }
+
+            val latoLungo = maxOf(bitmap.width, bitmap.height)
+            if (latoLungo <= FOTO_MIN_DIMENSION) {
+                file.writeBytes(migliore)
+                bitmap.recycle()
+                return@runCatching
+            }
+
+            maxDimension = (maxDimension * 0.85f).toInt().coerceAtLeast(FOTO_MIN_DIMENSION)
+            val ridotta = scalaBitmap(bitmap, maxDimension)
+            if (ridotta !== bitmap) {
+                bitmap.recycle()
+                bitmap = ridotta
+            } else {
+                file.writeBytes(migliore)
+                bitmap.recycle()
+                return@runCatching
+            }
+        }
+    }
+}
+
+private fun decodeBitmapPerInvio(file: File, maxDimension: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (
+        bounds.outWidth / sampleSize > maxDimension * 2 ||
+        bounds.outHeight / sampleSize > maxDimension * 2
+    ) {
+        sampleSize *= 2
+    }
+
+    val decoded = BitmapFactory.decodeFile(
+        file.absolutePath,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    ) ?: return null
+    return scalaBitmap(decoded, maxDimension).also { scaled ->
+        if (scaled !== decoded) decoded.recycle()
+    }
+}
+
+private fun scalaBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+    val latoLungo = maxOf(bitmap.width, bitmap.height)
+    if (latoLungo <= maxDimension) return bitmap
+    val scale = maxDimension.toFloat() / latoLungo.toFloat()
+    val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
+    val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(bitmap, width, height, true)
+}
+
+private fun ruotaBitmapDaExif(bitmap: Bitmap, path: String): Bitmap {
+    val orientation = runCatching {
+        ExifInterface(path).getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    val degrees = when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+        else -> 0f
+    }
+    if (degrees == 0f) return bitmap
+    val matrix = Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
+        bitmap.recycle()
+    }
+}
+
+private fun comprimiJpeg(bitmap: Bitmap, quality: Int): ByteArray {
+    return ByteArrayOutputStream().use { output ->
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
+        output.toByteArray()
+    }
 }
 
 private fun decodePreviewImage(path: String) = runCatching {
@@ -2113,21 +2480,3 @@ private fun decodePreviewImage(path: String) = runCatching {
     }
     BitmapFactory.decodeFile(path, options)?.asImageBitmap()
 }.getOrNull()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -3,4 +3,7 @@
     <files-path
         name="perizia_foto"
         path="perizia_foto/" />
+    <files-path
+        name="trasferimenti"
+        path="trasferimenti/" />
 </paths>

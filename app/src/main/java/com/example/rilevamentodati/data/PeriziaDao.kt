@@ -23,14 +23,22 @@ interface PeriziaDao {
     @Query("SELECT COUNT(*) FROM perizie WHERE idTelaioOrigine = :idTelaioOrigine")
     suspend fun countByTelaioOrigine(idTelaioOrigine: Int): Int
 
+    @Transaction
+    @Query("SELECT * FROM perizie WHERE syncStatus = 'DA_INVIARE' ORDER BY dataPerizia ASC")
+    suspend fun getDaInviareWithFoto(): List<PeriziaConFoto>
+
+    @Transaction
+    @Query("SELECT * FROM perizie WHERE syncStatus = 'INVIATO' ORDER BY dataPerizia ASC")
+    suspend fun getInviateWithFoto(): List<PeriziaConFoto>
+
     @Query("SELECT path FROM foto_perizie WHERE periziaId IN (SELECT id FROM perizie WHERE isDekra = 0)")
     suspend fun getFotoPathsArchivioLocale(): List<String>
 
     @Query("DELETE FROM foto_perizie WHERE periziaId IN (SELECT id FROM perizie WHERE isDekra = 0)")
-    suspend fun deleteFotoArchivioLocale()
+    suspend fun deleteFotoArchivioLocale(): Int
 
     @Query("DELETE FROM perizie WHERE isDekra = 0")
-    suspend fun deleteArchivioLocale()
+    suspend fun deleteArchivioLocale(): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(perizia: Perizia): Long
@@ -42,18 +50,26 @@ interface PeriziaDao {
     suspend fun update(perizia: Perizia)
 
     @Query("DELETE FROM foto_perizie WHERE periziaId = :periziaId")
-    suspend fun deleteFotoByPeriziaId(periziaId: Long)
+    suspend fun deleteFotoByPeriziaId(periziaId: Long): Int
 
     @Query("DELETE FROM foto_perizie WHERE id = :id")
-    suspend fun deleteFotoById(id: Long)
+    suspend fun deleteFotoById(id: Long): Int
+
+    @Query("DELETE FROM foto_perizie WHERE periziaId IN (SELECT id FROM perizie WHERE syncStatus = 'INVIATO')")
+    suspend fun deleteFotoInviate(): Int
+
+    @Query("DELETE FROM perizie WHERE syncStatus = 'INVIATO'")
+    suspend fun deletePerizieInviate(): Int
 
     @Query("UPDATE perizie SET syncStatus = 'DA_INVIARE' WHERE id = :id")
-    suspend fun markPeriziaDaInviare(id: Long)
+    suspend fun markPeriziaDaInviare(id: Long): Int
 
-    @Query("UPDATE perizie SET syncStatus = 'INVIATO' WHERE syncStatus = 'DA_INVIARE'")
-    suspend fun markDaInviareAsInviato()
+    @Query("UPDATE perizie SET syncStatus = 'INVIATO' WHERE id IN (:ids)")
+    suspend fun markInviate(ids: List<Long>): Int
+
+    @Query("UPDATE perizie SET syncStatus = 'DA_INVIARE' WHERE isDekra = 1 AND idCommessa = :commessaId AND syncStatus = 'INVIATO'")
+    suspend fun markCommessaDaReinviare(commessaId: Int): Int
 
     @Query("DELETE FROM perizie WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    suspend fun deleteById(id: Long): Int
 }
-

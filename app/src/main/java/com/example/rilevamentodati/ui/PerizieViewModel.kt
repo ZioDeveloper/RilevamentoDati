@@ -1,5 +1,6 @@
 package com.example.rilevamentodati.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -27,26 +28,39 @@ data class PeriziaForm(
         get() = periziaInModifica != null
 }
 
+data class TrasferimentoUiState(
+    val inCorso: Boolean = false,
+    val messaggio: String? = null,
+    val errore: String? = null,
+    val ultimoPacchettoPath: String? = null,
+    val pacchettoDaInviarePath: String? = null,
+    val puliziaInCorso: Boolean = false
+)
+
 data class PerizieUiState(
     val form: PeriziaForm = PeriziaForm(),
     val perizie: List<PeriziaConFoto> = emptyList(),
-    val daInviareCount: Int = 0
+    val daInviareCount: Int = 0,
+    val trasferimento: TrasferimentoUiState = TrasferimentoUiState()
 )
 
 class PerizieViewModel(
     private val repository: PeriziaRepository
 ) : ViewModel() {
     private val form = MutableStateFlow(PeriziaForm())
+    private val trasferimento = MutableStateFlow(TrasferimentoUiState())
 
     val uiState = combine(
         form,
         repository.perizie,
-        repository.daInviareCount
-    ) { form, perizie, daInviareCount ->
+        repository.daInviareCount,
+        trasferimento
+    ) { form, perizie, daInviareCount, trasferimento ->
         PerizieUiState(
             form = form,
             perizie = perizie,
-            daInviareCount = daInviareCount
+            daInviareCount = daInviareCount,
+            trasferimento = trasferimento
         )
     }.stateIn(
         scope = viewModelScope,
@@ -83,9 +97,7 @@ class PerizieViewModel(
     fun salva() {
         val current = form.value
         if (current.targa.isBlank()) {
-            form.update {
-                it.copy(errore = "La targa e' obbligatoria.")
-            }
+            form.update { it.copy(errore = "La targa e' obbligatoria.") }
             return
         }
 
@@ -130,6 +142,11 @@ class PerizieViewModel(
             repository.rimuoviFotoGuidata(foto)
         }
     }
+    fun segnaCommessaDaReinviare(commessaId: Int) {
+        viewModelScope.launch {
+            repository.segnaCommessaDaReinviare(commessaId)
+        }
+    }
 
     fun modifica(periziaConFoto: PeriziaConFoto) {
         val perizia = periziaConFoto.perizia
@@ -146,9 +163,79 @@ class PerizieViewModel(
         form.value = PeriziaForm()
     }
 
-    fun inviaDati() {
+    fun creaPacchettoTrasferimento(context: Context) {
         viewModelScope.launch {
-            repository.inviaDati()
+            trasferimento.value = TrasferimentoUiState(inCorso = true)
+            runCatching {
+                repository.creaPacchettoTrasferimento(context.applicationContext)
+            }.onSuccess { result ->
+                trasferimento.value = if (result == null) {
+                    TrasferimentoUiState(
+                        messaggio = "Non ci sono dati da trasferire."
+                    )
+                } else {
+                    TrasferimentoUiState(
+                        messaggio = "Pacchetto creato: ${result.perizie} perizie, ${result.foto} foto.",
+                        ultimoPacchettoPath = result.file.absolutePath,
+                        pacchettoDaInviarePath = result.file.absolutePath
+                    )
+                }
+            }.onFailure { errore ->
+                trasferimento.value = TrasferimentoUiState(
+                    errore = errore.message ?: "Errore durante la creazione del pacchetto."
+                )
+            }
+        }
+    }
+
+    fun inviaPacchettoApi(context: Context, endpoint: String) {
+        viewModelScope.launch {
+            trasferimento.value = TrasferimentoUiState(inCorso = true)
+            runCatching {
+                repository.inviaPacchettoApi(context.applicationContext, endpoint)
+            }.onSuccess { result ->
+                trasferimento.value = if (result == null) {
+                    TrasferimentoUiState(
+                        messaggio = "Non ci sono dati da trasferire."
+                    )
+                } else {
+                    TrasferimentoUiState(
+                        messaggio = "Import API completato: ${result.perizie} perizie, ${result.foto} foto.",
+                        ultimoPacchettoPath = result.file.absolutePath
+                    )
+                }
+            }.onFailure { errore ->
+                trasferimento.value = TrasferimentoUiState(
+                    errore = errore.message ?: "Errore durante l'invio all'API."
+                )
+            }
+        }
+    }
+
+    fun pacchettoEmailAperto() {
+        trasferimento.update { it.copy(pacchettoDaInviarePath = null) }
+    }
+    fun pulisciFotoInviate() {
+        viewModelScope.launch {
+            trasferimento.update { it.copy(puliziaInCorso = true, messaggio = null, errore = null) }
+            runCatching {
+                repository.pulisciFotoInviate()
+            }.onSuccess { result ->
+                trasferimento.update {
+                    it.copy(
+                        puliziaInCorso = false,
+                        messaggio = "Cancellate ${result.perizieCancellate} perizie inviate e ${result.fotoCancellate} foto.",
+                        errore = null
+                    )
+                }
+            }.onFailure { errore ->
+                trasferimento.update {
+                    it.copy(
+                        puliziaInCorso = false,
+                        errore = errore.message ?: "Errore durante la cancellazione dei dati inviati."
+                    )
+                }
+            }
         }
     }
 
@@ -173,4 +260,3 @@ class PerizieViewModelFactory(
         throw IllegalArgumentException("ViewModel non supportato: ${modelClass.name}")
     }
 }
-
