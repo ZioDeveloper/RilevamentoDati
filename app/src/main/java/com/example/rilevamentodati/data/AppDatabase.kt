@@ -9,8 +9,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [Perizia::class, FotoPerizia::class],
-    version = 6,
+    entities = [
+        Perizia::class,
+        FotoPerizia::class,
+        UtenteCache::class,
+        CommessaCache::class,
+        TelaioCache::class
+    ],
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(SyncStatusConverter::class)
@@ -28,7 +34,14 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "rilevamento_dati.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7
+                    )
                     .build()
                     .also { instance = it }
             }
@@ -89,6 +102,61 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("DELETE FROM foto_perizie")
                 db.execSQL("DELETE FROM perizie")
+            }
+        }
+
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS utenti_cache (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        nome TEXT NOT NULL,
+                        cognome TEXT NOT NULL,
+                        passwordHash TEXT NOT NULL,
+                        ultimoAggiornamento INTEGER NOT NULL,
+                        ultimoLogin INTEGER
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS commesse_cache (
+                        utenteId TEXT NOT NULL,
+                        id INTEGER NOT NULL,
+                        codice TEXT NOT NULL,
+                        descrizione TEXT NOT NULL,
+                        idCliente INTEGER,
+                        ultimoAggiornamento INTEGER NOT NULL,
+                        PRIMARY KEY(utenteId, id)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_commesse_cache_utenteId ON commesse_cache(utenteId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_commesse_cache_id ON commesse_cache(id)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS telai_cache (
+                        idTelaio INTEGER NOT NULL PRIMARY KEY,
+                        idCommessa INTEGER NOT NULL,
+                        targa TEXT NOT NULL,
+                        telaio TEXT,
+                        modello TEXT,
+                        dataIn INTEGER,
+                        idTecnico INTEGER,
+                        idGravita INTEGER,
+                        fila TEXT,
+                        annotazioni TEXT,
+                        fotoPresenti INTEGER NOT NULL,
+                        fotoObbligatorie INTEGER NOT NULL,
+                        sequenzaCompleta INTEGER NOT NULL,
+                        ultimoAggiornamento INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_telai_cache_idCommessa ON telai_cache(idCommessa)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_telai_cache_targa ON telai_cache(targa)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_telai_cache_telaio ON telai_cache(telaio)")
             }
         }
     }

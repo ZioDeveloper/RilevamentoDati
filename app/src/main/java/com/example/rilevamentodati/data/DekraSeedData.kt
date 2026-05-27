@@ -120,6 +120,42 @@ object DekraSeedData {
         return commesse.filter { it.id in ids }
     }
 
+    fun commesseCachePerUtente(utenteId: String, aggiornamento: Long): List<CommessaCache> {
+        val codiceUtente = utenteId.trim().uppercase()
+        return commessePerUtente(codiceUtente).map { commessa ->
+            CommessaCache(
+                utenteId = codiceUtente,
+                id = commessa.id,
+                codice = commessa.codice,
+                descrizione = commessa.descrizione,
+                idCliente = commessa.idCliente,
+                ultimoAggiornamento = aggiornamento
+            )
+        }
+    }
+
+    fun telaiCache(aggiornamento: Long): List<TelaioCache> {
+        val fotoObbligatorie = tipiDocumentoGuidati.sumOf { it.numMinFoto }
+        return telai.map { telaio ->
+            TelaioCache(
+                idTelaio = telaio.id,
+                idCommessa = telaio.idCommessa,
+                targa = telaio.targa,
+                telaio = telaio.telaio,
+                modello = telaio.modello,
+                dataIn = dataInMillis(telaio.dataIn),
+                idTecnico = telaio.idTecnico,
+                idGravita = telaio.idGravita,
+                fila = telaio.fila,
+                annotazioni = telaio.annotazioni,
+                fotoPresenti = 0,
+                fotoObbligatorie = fotoObbligatorie,
+                sequenzaCompleta = false,
+                ultimoAggiornamento = aggiornamento
+            )
+        }
+    }
+
     fun commessa(id: Int?): DekraCommessaSeed? {
         return commesse.firstOrNull { it.id == id }
     }

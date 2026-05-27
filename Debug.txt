@@ -1,0 +1,6 @@
+// SU Powershell
+
+.\adb.exe reverse tcp:5205 tcp:5205
+.\adb.exe reverse --list
+
+// per attivare debug sul cell in modo da usare adb per parlare con swag

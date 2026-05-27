@@ -103,6 +103,7 @@ import com.example.rilevamentodati.data.FotoPerizia
 import com.example.rilevamentodati.data.Perizia
 import com.example.rilevamentodati.data.PeriziaConFoto
 import com.example.rilevamentodati.data.SyncStatus
+import com.example.rilevamentodati.data.TelaioCache
 import com.example.rilevamentodati.ui.PerizieUiState
 import com.example.rilevamentodati.ui.PerizieViewModel
 import com.example.rilevamentodati.ui.PerizieViewModelFactory
@@ -135,6 +136,9 @@ class MainActivity : ComponentActivity() {
                         onCloseAppClick = { finish() }
                     )
                 } else {
+                    LaunchedEffect(utenteAutenticato.id) {
+                        viewModel.preparaCacheDekraPerUtente(utenteAutenticato.id)
+                    }
                     RilevamentoDatiAppScreen(
                         state = state,
                         utente = utenteAutenticato,
@@ -146,11 +150,19 @@ class MainActivity : ComponentActivity() {
                         onAggiungiFoto = viewModel::aggiungiFoto,
                         onRimuoviFoto = viewModel::rimuoviFoto,
                         onCreaDekraPerizia = viewModel::creaDekraPerizia,
+                        onCreaDekraPeriziaDaTelaio = viewModel::creaDekraPeriziaDaTelaio,
                         onAggiungiFotoGuidata = viewModel::aggiungiFotoGuidata,
                         onRimuoviFotoGuidata = viewModel::rimuoviFotoGuidata,
                         onSegnaCommessaDaReinviare = viewModel::segnaCommessaDaReinviare,
                         onSalvaClick = viewModel::salva,
                         onInviaDatiClick = { viewModel.inviaPacchettoApi(app, API_IMPORT_URL) },
+                        onAllineaDatabaseClick = {
+                            viewModel.allineaDatabase(
+                                endpoint = API_ALLINEAMENTO_URL,
+                                utenteId = utenteAutenticato.id,
+                                password = utenteAutenticato.password
+                            )
+                        },
                         onPacchettoEmailAperto = viewModel::pacchettoEmailAperto,
                         onPulisciFotoInviateClick = viewModel::pulisciFotoInviate,
                         onModificaClick = viewModel::modifica,
@@ -280,8 +292,8 @@ private fun LoginScreen(
     onLoginSuccess: (LoginUser) -> Unit,
     onCloseAppClick: () -> Unit
 ) {
-    var codice by rememberSaveable { mutableStateOf("C001") }
-    var password by rememberSaveable { mutableStateOf("Alesi") }
+    var codice by rememberSaveable { mutableStateOf("ZAN") }
+    var password by rememberSaveable { mutableStateOf("NSG26") }
     var errore by rememberSaveable { mutableStateOf<String?>(null) }
     val isOnline = rememberOnlineStatus()
     val appVersion = rememberAppVersionName()
@@ -428,13 +440,15 @@ private fun LoginScreen(
 private enum class AppSection(
     val title: String
 ) {
-    DEKRA("DEKRA offline"),
+    DEKRA("Perizie Dekra"),
+    ALLINEAMENTO("Allineamento database"),
     TRASFERIMENTO("Trasferimento dati")
 }
 
 private const val DETAIL_NEW = "new"
 private const val DETAIL_EDIT = "edit"
 private const val API_IMPORT_URL = "http://127.0.0.1:5205/api/import/rilevamento-dati?dryRun=false"
+private const val API_ALLINEAMENTO_URL = "http://127.0.0.1:5205/api/allineamento-database"
 private const val DESTINATARIO_TRASFERIMENTO = ""
 private const val FOTO_TARGET_MAX_BYTES = 300 * 1024
 private const val FOTO_MAX_DIMENSION = 1600
@@ -459,11 +473,13 @@ private fun RilevamentoDatiAppScreen(
     onAggiungiFoto: (String) -> Unit,
     onRimuoviFoto: (String) -> Unit,
     onCreaDekraPerizia: (Int, String) -> Unit,
+    onCreaDekraPeriziaDaTelaio: (TelaioCache) -> Unit,
     onAggiungiFotoGuidata: (Long, DekraTipoDocumentoSeed, String) -> Unit,
     onRimuoviFotoGuidata: (FotoPerizia) -> Unit,
     onSegnaCommessaDaReinviare: (Int) -> Unit,
     onSalvaClick: () -> Unit,
     onInviaDatiClick: () -> Unit,
+    onAllineaDatabaseClick: () -> Unit,
     onPacchettoEmailAperto: () -> Unit,
     onPulisciFotoInviateClick: () -> Unit,
     onModificaClick: (PeriziaConFoto) -> Unit,
@@ -479,8 +495,19 @@ private fun RilevamentoDatiAppScreen(
     var nuovaTarga by rememberSaveable { mutableStateOf("") }
     var nuovaTargaErrore by rememberSaveable { mutableStateOf<String?>(null) }
     var targaDaAprireDopoCreazione by rememberSaveable { mutableStateOf<String?>(null) }
+    var telaioDaAprireDopoCreazione by rememberSaveable { mutableStateOf<Int?>(null) }
     var mostraConfermaInvio by remember { mutableStateOf(false) }
     val currentSection = AppSection.valueOf(currentSectionName)
+    val commesseDisponibili = remember(state.commesseCache) {
+        state.commesseCache.map { commessa ->
+            DekraCommessaSeed(
+                id = commessa.id,
+                codice = commessa.codice,
+                descrizione = commessa.descrizione,
+                idCliente = commessa.idCliente ?: 35
+            )
+        }
+    }
     val selectedPerizia = selectedPeriziaId?.let { id ->
         state.perizie.firstOrNull { it.perizia.id == id }
     }
@@ -499,6 +526,16 @@ private fun RilevamentoDatiAppScreen(
         if (nuovaPerizia != null) {
             selectedDekraPeriziaId = nuovaPerizia.perizia.id
             targaDaAprireDopoCreazione = null
+        }
+    }
+    LaunchedEffect(state.perizie, telaioDaAprireDopoCreazione) {
+        val idTelaio = telaioDaAprireDopoCreazione ?: return@LaunchedEffect
+        val nuovaPerizia = state.perizie.firstOrNull {
+            it.perizia.isDekra && it.perizia.idTelaioOrigine == idTelaio
+        }
+        if (nuovaPerizia != null) {
+            selectedDekraPeriziaId = nuovaPerizia.perizia.id
+            telaioDaAprireDopoCreazione = null
         }
     }
 
@@ -552,6 +589,7 @@ private fun RilevamentoDatiAppScreen(
         nuovaTarga = ""
         nuovaTargaErrore = null
         targaDaAprireDopoCreazione = null
+        telaioDaAprireDopoCreazione = null
         onAnnullaModificaClick()
     }
 
@@ -565,6 +603,7 @@ private fun RilevamentoDatiAppScreen(
         nuovaTarga = ""
         nuovaTargaErrore = null
         targaDaAprireDopoCreazione = null
+        telaioDaAprireDopoCreazione = null
         onAnnullaModificaClick()
         scope.launch { drawerState.close() }
     }
@@ -680,11 +719,11 @@ private fun RilevamentoDatiAppScreen(
 
 
                 currentSection == AppSection.DEKRA -> {
-                    val commessa = DekraSeedData.commessa(selectedDekraCommessaId)
+                    val commessa = commesseDisponibili.firstOrNull { it.id == selectedDekraCommessaId }
                     when {
                         commessa == null -> {
                             DekraCommesseScreen(
-                                utente = utente,
+                                commesse = commesseDisponibili,
                                 isOnline = isOnline,
                                 onCommessaClick = { selectedDekraCommessaId = it.id },
                                 modifier = Modifier.padding(innerPadding)
@@ -696,12 +735,23 @@ private fun RilevamentoDatiAppScreen(
                                 perizie = state.perizie.filter {
                                     it.perizia.isDekra && it.perizia.idCommessa == commessa.id
                                 },
+                                telai = state.telaiCache.filter { it.idCommessa == commessa.id },
                                 onNuovaPeriziaClick = {
                                     nuovaTargaCommessaId = commessa.id
                                     nuovaTarga = ""
                                     nuovaTargaErrore = null
                                 },
+                                onTelaioClick = { telaio ->
+                                    telaioDaAprireDopoCreazione = telaio.idTelaio
+                                    onCreaDekraPeriziaDaTelaio(telaio)
+                                },
                                 onPeriziaClick = { selectedDekraPeriziaId = it.perizia.id },
+                                onEliminaPeriziaClick = { perizia ->
+                                    onEliminaClick(perizia)
+                                    if (selectedDekraPeriziaId == perizia.id) {
+                                        selectedDekraPeriziaId = null
+                                    }
+                                },
                                 onSegnaDaReinviareClick = { onSegnaCommessaDaReinviare(commessa.id) },
                                 modifier = Modifier.padding(innerPadding)
                             )
@@ -732,6 +782,15 @@ private fun RilevamentoDatiAppScreen(
                     }
                 }
 
+                currentSection == AppSection.ALLINEAMENTO -> {
+                    AllineamentoDatabaseScreen(
+                        state = state,
+                        isOnline = isOnline,
+                        onAllineaClick = onAllineaDatabaseClick,
+                        modifier = Modifier.padding(innerPadding)
+                    )
+                }
+
                 currentSection == AppSection.TRASFERIMENTO -> {
                     TrasferimentoDatiScreen(
                         state = state,
@@ -747,7 +806,7 @@ private fun RilevamentoDatiAppScreen(
     }
 
     nuovaTargaCommessaId?.let { commessaId ->
-        DekraSeedData.commessa(commessaId)?.let { commessa ->
+        commesseDisponibili.firstOrNull { it.id == commessaId }?.let { commessa ->
             NuovaDekraPeriziaDialog(
                 commessa = commessa,
                 targa = nuovaTarga,
@@ -840,6 +899,19 @@ private fun AppDrawer(
         )
 
         NavigationDrawerItem(
+            label = { Text(AppSection.ALLINEAMENTO.title) },
+            selected = currentSection == AppSection.ALLINEAMENTO && !inDettaglio,
+            onClick = { onSectionClick(AppSection.ALLINEAMENTO) },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.List,
+                    contentDescription = null
+                )
+            },
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        )
+
+        NavigationDrawerItem(
             label = { Text(AppSection.TRASFERIMENTO.title) },
             selected = currentSection == AppSection.TRASFERIMENTO && !inDettaglio,
             onClick = { onSectionClick(AppSection.TRASFERIMENTO) },
@@ -870,14 +942,93 @@ private fun AppDrawer(
 }
 
 @Composable
+private fun AllineamentoDatabaseScreen(
+    state: PerizieUiState,
+    isOnline: Boolean,
+    onAllineaClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            SectionTitle("Allineamento database")
+        }
+
+        item {
+            OnlineStatusCard(isOnline = isOnline)
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = if (isOnline) {
+                            "Aggiorna commesse e telai disponibili per l'utente collegato."
+                        } else {
+                            "Connessione assente: rimane valida l'ultima cache locale."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    state.allineamento.messaggio?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    state.allineamento.errore?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Button(
+                        onClick = onAllineaClick,
+                        enabled = isOnline && !state.allineamento.inCorso,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.List,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Text(
+                            if (state.allineamento.inCorso) {
+                                "Allineamento in corso..."
+                            } else {
+                                "Allineamento database"
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DekraCommesseScreen(
-    utente: LoginUser,
+    commesse: List<DekraCommessaSeed>,
     isOnline: Boolean,
     onCommessaClick: (DekraCommessaSeed) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val commesse = remember(utente.id) { DekraSeedData.commessePerUtente(utente.id) }
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -944,13 +1095,26 @@ private fun DekraCommesseScreen(
 private fun DekraVeicoliScreen(
     commessa: DekraCommessaSeed,
     perizie: List<PeriziaConFoto>,
+    telai: List<TelaioCache>,
     onNuovaPeriziaClick: () -> Unit,
+    onTelaioClick: (TelaioCache) -> Unit,
     onPeriziaClick: (PeriziaConFoto) -> Unit,
+    onEliminaPeriziaClick: (Perizia) -> Unit,
     onSegnaDaReinviareClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val inviate = perizie.count { it.perizia.syncStatus == SyncStatus.INVIATO }
     val daInviare = perizie.count { it.perizia.syncStatus == SyncStatus.DA_INVIARE }
+    val telaiInPerizia = perizie.mapNotNull { it.perizia.idTelaioOrigine }.toSet()
+    val telaiDaFotografare = telai.filter { it.idTelaio !in telaiInPerizia }
+    var filtroTarga by rememberSaveable(commessa.id) { mutableStateOf("") }
+    val filtroTargaNormalizzato = filtroTarga.trim().uppercase()
+    val telaiFiltrati = if (filtroTargaNormalizzato.isBlank()) {
+        telaiDaFotografare
+    } else {
+        telaiDaFotografare.filter { it.targa.uppercase().startsWith(filtroTargaNormalizzato) }
+    }
+    var periziaDaEliminare by remember { mutableStateOf<Perizia?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -961,9 +1125,20 @@ private fun DekraVeicoliScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SectionTitle(commessa.descrizione)
                 Text(
-                    text = "${perizie.size} veicoli disponibili offline - $daInviare da inviare, $inviate inviati",
+                    text = "${telaiDaFotografare.size} telai da fotografare - ${perizie.size} perizie locali, $daInviare da inviare, $inviate inviati",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary
+                )
+                OutlinedTextField(
+                    value = filtroTarga,
+                    onValueChange = { filtroTarga = it.uppercase() },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Filtra targa") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Characters,
+                        imeAction = ImeAction.Done
+                    )
                 )
                 OutlinedButton(
                     onClick = onSegnaDaReinviareClick,
@@ -1001,7 +1176,60 @@ private fun DekraVeicoliScreen(
             }
         }
 
-        if (perizie.isEmpty()) {
+        if (telaiDaFotografare.isNotEmpty()) {
+            item {
+                SectionTitle(
+                    if (filtroTargaNormalizzato.isBlank()) {
+                        "Telai da fotografare"
+                    } else {
+                        "Telai filtrati (${telaiFiltrati.size})"
+                    }
+                )
+            }
+            if (telaiFiltrati.isEmpty()) {
+                item {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "Nessuna targa inizia con \"$filtroTargaNormalizzato\".",
+                            modifier = Modifier.padding(20.dp),
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+            } else {
+                items(
+                    items = telaiFiltrati,
+                    key = { it.idTelaio }
+                ) { telaio ->
+                    DekraTelaioItem(
+                        telaio = telaio,
+                        onClick = { onTelaioClick(telaio) }
+                    )
+                }
+            }
+        }
+
+        if (perizie.isNotEmpty()) {
+            item {
+                SectionTitle("Perizie locali")
+            }
+            items(
+                items = perizie,
+                key = { it.perizia.id }
+            ) { perizia ->
+                DekraVeicoloItem(
+                    periziaConFoto = perizia,
+                    onClick = { onPeriziaClick(perizia) },
+                    onDeleteClick = { periziaDaEliminare = perizia.perizia }
+                )
+            }
+        }
+
+        if (perizie.isEmpty() && telaiDaFotografare.isEmpty()) {
             item {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -1015,16 +1243,64 @@ private fun DekraVeicoliScreen(
                     )
                 }
             }
-        } else {
-            items(
-                items = perizie,
-                key = { it.perizia.id }
-            ) { perizia ->
-                DekraVeicoloItem(
-                    periziaConFoto = perizia,
-                    onClick = { onPeriziaClick(perizia) }
+        }
+    }
+
+    periziaDaEliminare?.let { perizia ->
+        ConfirmDialog(
+            title = "Cancellare la perizia?",
+            text = "La targa ${perizia.targa} e tutte le foto locali verranno rimosse dal dispositivo.",
+            confirmText = "Cancella",
+            onConfirm = {
+                periziaDaEliminare = null
+                onEliminaPeriziaClick(perizia)
+            },
+            onDismiss = { periziaDaEliminare = null }
+        )
+    }
+}
+
+@Composable
+private fun DekraTelaioItem(
+    telaio: TelaioCache,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = telaio.targa.ifBlank { "Senza targa" },
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            telaio.modello?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyLarge
                 )
             }
+            telaio.telaio?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = "Telaio: $it",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                text = "ID telaio Grandine: ${telaio.idTelaio}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary
+            )
         }
     }
 }
@@ -1032,7 +1308,8 @@ private fun DekraVeicoliScreen(
 @Composable
 private fun DekraVeicoloItem(
     periziaConFoto: PeriziaConFoto,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDeleteClick: () -> Unit
 ) {
     val perizia = periziaConFoto.perizia
     val completed = completedDekraSteps(periziaConFoto)
@@ -1072,12 +1349,24 @@ private fun DekraVeicoloItem(
                         )
                     }
                 }
-                Text(
-                    text = "$completed/$total",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "$completed/$total",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onDeleteClick) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Elimina perizia",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
 
             if (perizia.telaio.isNotBlank()) {
@@ -1407,34 +1696,34 @@ private fun DekraStepCard(
             }
 
             foto.forEachIndexed { index, item ->
-                Text(
-                    text = "Foto ${index + 1}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Foto ${index + 1}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    IconButton(
+                        onClick = { onRimuoviFotoClick(item) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Rimuovi foto",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
                 PhotoPreview(
                     fotoPath = item.path,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(150.dp)
                 )
-                OutlinedButton(
-                    onClick = { onRimuoviFotoClick(item) },
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                    Spacer(modifier = Modifier.size(8.dp))
-                    Text(
-                        text = "Rimuovi foto",
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
             }
         }
     }

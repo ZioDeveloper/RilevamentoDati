@@ -23,6 +23,42 @@ interface PeriziaDao {
     @Query("SELECT COUNT(*) FROM perizie WHERE idTelaioOrigine = :idTelaioOrigine")
     suspend fun countByTelaioOrigine(idTelaioOrigine: Int): Int
 
+    @Query("SELECT * FROM utenti_cache WHERE id = :utenteId")
+    suspend fun getUtenteCache(utenteId: String): UtenteCache?
+
+    @Query("SELECT * FROM commesse_cache WHERE utenteId = :utenteId ORDER BY descrizione")
+    suspend fun getCommesseCacheByUtente(utenteId: String): List<CommessaCache>
+
+    @Query("SELECT * FROM telai_cache WHERE idCommessa = :commessaId ORDER BY targa, telaio")
+    suspend fun getTelaiCacheByCommessa(commessaId: Int): List<TelaioCache>
+
+    @Query("SELECT * FROM telai_cache ORDER BY idCommessa, targa, telaio")
+    fun observeAllTelaiCache(): Flow<List<TelaioCache>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertUtenteCache(utente: UtenteCache)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCommesseCache(commesse: List<CommessaCache>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertTelaiCache(telai: List<TelaioCache>)
+
+    @Query("DELETE FROM commesse_cache WHERE utenteId = :utenteId")
+    suspend fun deleteCommesseCacheByUtente(utenteId: String): Int
+
+    @Query("DELETE FROM telai_cache WHERE idCommessa = :commessaId")
+    suspend fun deleteTelaiCacheByCommessa(commessaId: Int): Int
+
+    @Query("DELETE FROM telai_cache")
+    suspend fun deleteAllTelaiCache(): Int
+
+    @Query("DELETE FROM telai_cache WHERE idCommessa IN (:commessaIds)")
+    suspend fun deleteTelaiCacheByCommesse(commessaIds: List<Int>): Int
+
+    @Query("DELETE FROM telai_cache WHERE idCommessa NOT IN (:commessaIds)")
+    suspend fun deleteTelaiCacheNotInCommesse(commessaIds: List<Int>): Int
+
     @Transaction
     @Query("SELECT * FROM perizie WHERE syncStatus = 'DA_INVIARE' ORDER BY dataPerizia ASC")
     suspend fun getDaInviareWithFoto(): List<PeriziaConFoto>
@@ -33,6 +69,9 @@ interface PeriziaDao {
 
     @Query("SELECT path FROM foto_perizie WHERE periziaId IN (SELECT id FROM perizie WHERE isDekra = 0)")
     suspend fun getFotoPathsArchivioLocale(): List<String>
+
+    @Query("SELECT path FROM foto_perizie WHERE periziaId = :periziaId")
+    suspend fun getFotoPathsByPeriziaId(periziaId: Long): List<String>
 
     @Query("DELETE FROM foto_perizie WHERE periziaId IN (SELECT id FROM perizie WHERE isDekra = 0)")
     suspend fun deleteFotoArchivioLocale(): Int

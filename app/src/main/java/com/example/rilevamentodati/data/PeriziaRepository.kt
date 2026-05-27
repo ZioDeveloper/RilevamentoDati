@@ -5,6 +5,7 @@ import java.io.DataOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
@@ -32,14 +33,109 @@ data class InvioApiResult(
     val response: String
 )
 
+data class AllineamentoDatabaseResult(
+    val commesse: Int,
+    val telai: Int,
+    val tipiDocumento: Int
+)
+
 class PeriziaRepository(
     private val dao: PeriziaDao
 ) {
     val perizie: Flow<List<PeriziaConFoto>> = dao.observeAllWithFoto()
     val daInviareCount: Flow<Int> = dao.observeDaInviareCount()
+    val telaiCache: Flow<List<TelaioCache>> = dao.observeAllTelaiCache()
 
     suspend fun prepareDekraOffline() {
         // Le commesse DEKRA restano nei dati statici; le perizie nascono solo da "Nuova targa".
+    }
+
+    suspend fun preparaCacheDekraPerUtente(utenteId: String): List<CommessaCache> {
+        val codiceUtente = utenteId.trim().uppercase()
+        val commesseCache = dao.getCommesseCacheByUtente(codiceUtente)
+        if (commesseCache.isNotEmpty()) {
+            return commesseCache
+        }
+
+        val aggiornamento = System.currentTimeMillis()
+        val commesse = DekraSeedData.commesseCachePerUtente(codiceUtente, aggiornamento)
+        dao.deleteCommesseCacheByUtente(codiceUtente)
+        dao.upsertCommesseCache(commesse)
+        dao.upsertTelaiCache(DekraSeedData.telaiCache(aggiornamento))
+        return dao.getCommesseCacheByUtente(codiceUtente)
+    }
+
+    suspend fun allineaDatabase(
+        endpoint: String,
+        utenteId: String,
+        password: String
+    ): Pair<AllineamentoDatabaseResult, List<CommessaCache>> = withContext(Dispatchers.IO) {
+        val response = postAllineamentoDatabase(endpoint, utenteId, password)
+        val root = JSONObject(response)
+        val aggiornamento = root.optLong("aggiornatoIl", System.currentTimeMillis())
+        val utente = root.getJSONObject("utente")
+        val codiceUtente = utente.optString("id", utenteId).trim().uppercase()
+        val commesseJson = root.optJSONArray("commesse") ?: JSONArray()
+        val telaiJson = root.optJSONArray("telai") ?: JSONArray()
+        val tipiDocumentoJson = root.optJSONArray("tipiDocumento") ?: JSONArray()
+
+        val commesse = (0 until commesseJson.length()).map { index ->
+            val item = commesseJson.getJSONObject(index)
+            CommessaCache(
+                utenteId = codiceUtente,
+                id = item.getInt("id"),
+                codice = item.optString("codice"),
+                descrizione = item.optString("descrizione"),
+                idCliente = item.optNullableInt("idCliente"),
+                ultimoAggiornamento = aggiornamento
+            )
+        }
+        val commessaIds = commesse.map { it.id }
+        val telai = (0 until telaiJson.length()).map { index ->
+            val item = telaiJson.getJSONObject(index)
+            TelaioCache(
+                idTelaio = item.getInt("idTelaio"),
+                idCommessa = item.getInt("idCommessa"),
+                targa = item.optString("targa").trim().uppercase(),
+                telaio = item.optNullableString("telaio"),
+                modello = item.optNullableString("modello"),
+                dataIn = null,
+                idTecnico = item.optNullableInt("idTecnico"),
+                idGravita = item.optNullableInt("idGravita"),
+                fila = item.optNullableString("fila"),
+                annotazioni = item.optNullableString("annotazioni"),
+                fotoPresenti = item.optInt("fotoPresenti", 0),
+                fotoObbligatorie = tipiDocumentoJson.length(),
+                sequenzaCompleta = false,
+                ultimoAggiornamento = aggiornamento
+            )
+        }
+
+        dao.upsertUtenteCache(
+            UtenteCache(
+                id = codiceUtente,
+                nome = utente.optString("nome"),
+                cognome = utente.optString("cognome"),
+                passwordHash = sha256(password.trim()),
+                ultimoAggiornamento = aggiornamento,
+                ultimoLogin = System.currentTimeMillis()
+            )
+        )
+        dao.deleteCommesseCacheByUtente(codiceUtente)
+        dao.upsertCommesseCache(commesse)
+        if (commessaIds.isEmpty()) {
+            dao.deleteAllTelaiCache()
+        } else {
+            dao.deleteTelaiCacheNotInCommesse(commessaIds)
+            dao.deleteTelaiCacheByCommesse(commessaIds)
+        }
+        dao.upsertTelaiCache(telai)
+
+        AllineamentoDatabaseResult(
+            commesse = commesse.size,
+            telai = telai.size,
+            tipiDocumento = tipiDocumentoJson.length()
+        ) to dao.getCommesseCacheByUtente(codiceUtente)
     }
 
     suspend fun salva(targa: String, telaio: String, modello: String, fotoPaths: List<String>) {
@@ -62,6 +158,23 @@ class PeriziaRepository(
                 telaio = "",
                 modello = "",
                 idCommessa = commessaId,
+                isDekra = true,
+                syncStatus = SyncStatus.DA_INVIARE
+            )
+        )
+    }
+
+    suspend fun creaDekraPeriziaDaTelaio(telaio: TelaioCache) {
+        if (dao.countByTelaioOrigine(telaio.idTelaio) > 0) return
+
+        dao.insert(
+            Perizia(
+                dataPerizia = System.currentTimeMillis(),
+                targa = telaio.targa.trim().uppercase(),
+                telaio = telaio.telaio?.trim()?.uppercase().orEmpty(),
+                modello = telaio.modello?.trim().orEmpty(),
+                idTelaioOrigine = telaio.idTelaio,
+                idCommessa = telaio.idCommessa,
                 isDekra = true,
                 syncStatus = SyncStatus.DA_INVIARE
             )
@@ -198,6 +311,10 @@ class PeriziaRepository(
     }
 
     suspend fun elimina(perizia: Perizia) {
+        val fotoPaths = dao.getFotoPathsByPeriziaId(perizia.id)
+        fotoPaths.forEach { path ->
+            File(path).delete()
+        }
         dao.deleteById(perizia.id)
     }
 
@@ -280,6 +397,65 @@ class PeriziaRepository(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun postAllineamentoDatabase(endpoint: String, utenteId: String, password: String): String {
+        val body = JSONObject().apply {
+            put("utenteId", utenteId.trim().uppercase())
+            put("password", password)
+            put("soloTelaiSenzaFoto", true)
+            put("maxTelai", 2000)
+        }.toString()
+
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 20_000
+            readTimeout = 120_000
+            doInput = true
+            doOutput = true
+            useCaches = false
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+
+        try {
+            connection.outputStream.use { output ->
+                output.write(body.toByteArray(Charsets.UTF_8))
+            }
+
+            val code = connection.responseCode
+            val responseStream = if (code in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+            val response = responseStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                error("Credenziali Grandine non valide.")
+            }
+            if (code !in 200..299) {
+                error("Allineamento database non riuscito ($code): ${response.ifBlank { connection.responseMessage }}")
+            }
+
+            return response
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun JSONObject.optNullableString(name: String): String? {
+        if (isNull(name)) return null
+        val value = optString(name).trim()
+        return value.ifBlank { null }
+    }
+
+    private fun JSONObject.optNullableInt(name: String): Int? {
+        return if (isNull(name)) null else optInt(name)
+    }
+
+    private fun sha256(value: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun inserisciFoto(periziaId: Long, fotoPaths: List<String>) {

@@ -4,11 +4,13 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.rilevamentodati.data.CommessaCache
 import com.example.rilevamentodati.data.DekraTipoDocumentoSeed
 import com.example.rilevamentodati.data.FotoPerizia
 import com.example.rilevamentodati.data.Perizia
 import com.example.rilevamentodati.data.PeriziaConFoto
 import com.example.rilevamentodati.data.PeriziaRepository
+import com.example.rilevamentodati.data.TelaioCache
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -37,10 +39,19 @@ data class TrasferimentoUiState(
     val puliziaInCorso: Boolean = false
 )
 
+data class AllineamentoUiState(
+    val inCorso: Boolean = false,
+    val messaggio: String? = null,
+    val errore: String? = null
+)
+
 data class PerizieUiState(
     val form: PeriziaForm = PeriziaForm(),
     val perizie: List<PeriziaConFoto> = emptyList(),
     val daInviareCount: Int = 0,
+    val commesseCache: List<CommessaCache> = emptyList(),
+    val telaiCache: List<TelaioCache> = emptyList(),
+    val allineamento: AllineamentoUiState = AllineamentoUiState(),
     val trasferimento: TrasferimentoUiState = TrasferimentoUiState()
 )
 
@@ -49,19 +60,38 @@ class PerizieViewModel(
 ) : ViewModel() {
     private val form = MutableStateFlow(PeriziaForm())
     private val trasferimento = MutableStateFlow(TrasferimentoUiState())
+    private val allineamento = MutableStateFlow(AllineamentoUiState())
+    private val commesseCache = MutableStateFlow<List<CommessaCache>>(emptyList())
 
-    val uiState = combine(
-        form,
+    private val dekraData = combine(
         repository.perizie,
         repository.daInviareCount,
-        trasferimento
-    ) { form, perizie, daInviareCount, trasferimento ->
+        repository.telaiCache
+    ) { perizie, daInviareCount, telaiCache ->
+        Triple(perizie, daInviareCount, telaiCache)
+    }
+
+    private val baseState = combine(
+        form,
+        dekraData,
+        commesseCache,
+        allineamento
+    ) { form, data, commesseCache, allineamento ->
         PerizieUiState(
             form = form,
-            perizie = perizie,
-            daInviareCount = daInviareCount,
-            trasferimento = trasferimento
+            perizie = data.first,
+            daInviareCount = data.second,
+            commesseCache = commesseCache,
+            telaiCache = data.third,
+            allineamento = allineamento
         )
+    }
+
+    val uiState = combine(
+        baseState,
+        trasferimento
+    ) { state, trasferimento ->
+        state.copy(trasferimento = trasferimento)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -71,6 +101,30 @@ class PerizieViewModel(
     init {
         viewModelScope.launch {
             repository.prepareDekraOffline()
+        }
+    }
+
+    fun preparaCacheDekraPerUtente(utenteId: String) {
+        viewModelScope.launch {
+            commesseCache.value = repository.preparaCacheDekraPerUtente(utenteId)
+        }
+    }
+
+    fun allineaDatabase(endpoint: String, utenteId: String, password: String) {
+        viewModelScope.launch {
+            allineamento.value = AllineamentoUiState(inCorso = true)
+            runCatching {
+                repository.allineaDatabase(endpoint, utenteId, password)
+            }.onSuccess { (result, commesseAggiornate) ->
+                commesseCache.value = commesseAggiornate
+                allineamento.value = AllineamentoUiState(
+                    messaggio = "Allineamento completato: ${result.commesse} commesse, ${result.telai} telai, ${result.tipiDocumento} tipi documento."
+                )
+            }.onFailure { errore ->
+                allineamento.value = AllineamentoUiState(
+                    errore = errore.message ?: "Errore durante l'allineamento database."
+                )
+            }
         }
     }
 
@@ -128,6 +182,12 @@ class PerizieViewModel(
 
         viewModelScope.launch {
             repository.creaDekraPerizia(commessaId, targa)
+        }
+    }
+
+    fun creaDekraPeriziaDaTelaio(telaio: TelaioCache) {
+        viewModelScope.launch {
+            repository.creaDekraPeriziaDaTelaio(telaio)
         }
     }
 

@@ -70,3 +70,50 @@ class SyncStatusConverter {
     @TypeConverter
     fun toSyncStatus(value: String): SyncStatus = SyncStatus.valueOf(value)
 }
+
+@Entity(tableName = "utenti_cache")
+data class UtenteCache(
+    @PrimaryKey
+    val id: String,
+    val nome: String,
+    val cognome: String,
+    val passwordHash: String,
+    val ultimoAggiornamento: Long,
+    val ultimoLogin: Long? = null
+)
+
+@Entity(
+    tableName = "commesse_cache",
+    primaryKeys = ["utenteId", "id"],
+    indices = [Index("utenteId"), Index("id")]
+)
+data class CommessaCache(
+    val utenteId: String,
+    val id: Int,
+    val codice: String,
+    val descrizione: String,
+    val idCliente: Int?,
+    val ultimoAggiornamento: Long
+)
+
+@Entity(
+    tableName = "telai_cache",
+    primaryKeys = ["idTelaio"],
+    indices = [Index("idCommessa"), Index("targa"), Index("telaio")]
+)
+data class TelaioCache(
+    val idTelaio: Int,
+    val idCommessa: Int,
+    val targa: String,
+    val telaio: String?,
+    val modello: String?,
+    val dataIn: Long?,
+    val idTecnico: Int?,
+    val idGravita: Int?,
+    val fila: String?,
+    val annotazioni: String?,
+    val fotoPresenti: Int,
+    val fotoObbligatorie: Int,
+    val sequenzaCompleta: Boolean,
+    val ultimoAggiornamento: Long
+)
